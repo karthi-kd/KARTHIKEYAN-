@@ -1,10 +1,12 @@
-from fastapi import FastAPI, UploadFile, File
+from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from scapy.all import rdpcap
+from scapy.layers.inet import IP
+import tempfile
+import os
 
 app = FastAPI()
 
-# Enable CORS
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -14,22 +16,32 @@ app.add_middleware(
 
 @app.post("/analyze")
 async def analyze(file: UploadFile = File(...)):
-    contents = await file.read()
+    if not file.filename.endswith(".pcap"):
+        raise HTTPException(status_code=400, detail="Only PCAP files allowed")
 
-    # Save uploaded PCAP
-    with open(file.filename, "wb") as f:
-        f.write(contents)
+    temp_path = None
+    try:
+        contents = await file.read()
 
-    # Read packets
-    packets = rdpcap(file.filename)
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".pcap") as tmp:
+            tmp.write(contents)
+            temp_path = tmp.name
+
+        packets = rdpcap(temp_path)
+
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Invalid PCAP file: {str(e)}")
+
+    finally:
+        if temp_path and os.path.exists(temp_path):
+            os.remove(temp_path)
 
     ip_count = {}
     for pkt in packets:
-        if pkt.haslayer("IP"):
-            src = pkt["IP"].src
+        if pkt.haslayer(IP):
+            src = pkt[IP].src
             ip_count[src] = ip_count.get(src, 0) + 1
 
-    # Prepare table-style data
     table_data = []
     for ip, count in ip_count.items():
         table_data.append({
