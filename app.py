@@ -1,7 +1,8 @@
 from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from scapy.all import rdpcap
+from scapy.all import rdpcap, ARP
 from scapy.layers.inet import IP
+from scapy.layers.inet6 import IPv6
 import tempfile
 import os
 
@@ -16,10 +17,12 @@ app.add_middleware(
 
 @app.post("/analyze")
 async def analyze(file: UploadFile = File(...)):
-    if not file.filename.endswith(".pcap"):
+    # ---------- VALIDATION ----------
+    if not file.filename.lower().endswith(".pcap"):
         raise HTTPException(status_code=400, detail="Only PCAP files allowed")
 
     temp_path = None
+
     try:
         contents = await file.read()
 
@@ -36,21 +39,42 @@ async def analyze(file: UploadFile = File(...)):
         if temp_path and os.path.exists(temp_path):
             os.remove(temp_path)
 
+    # ---------- ANALYSIS ----------
     ip_count = {}
+    arp_count = 0
+    non_ip_packets = 0
+
     for pkt in packets:
         if pkt.haslayer(IP):
             src = pkt[IP].src
-            ip_count[src] = ip_count.get(src, 0) + 1
 
-    table_data = []
-    for ip, count in ip_count.items():
-        table_data.append({
+        elif pkt.haslayer(IPv6):
+            src = pkt[IPv6].src
+
+        elif pkt.haslayer(ARP):
+            arp_count += 1
+            continue
+
+        else:
+            non_ip_packets += 1
+            continue
+
+        ip_count[src] = ip_count.get(src, 0) + 1
+
+    # ---------- RESPONSE TABLE ----------
+    table_data = [
+        {
             "source_ip": ip,
             "packet_count": count,
             "status": "Suspicious" if count > 100 else "Normal"
-        })
+        }
+        for ip, count in ip_count.items()
+    ]
 
     return {
         "total_packets": len(packets),
+        "ip_packets": sum(ip_count.values()),
+        "arp_packets": arp_count,
+        "non_ip_packets": non_ip_packets,
         "table": table_data
     }
